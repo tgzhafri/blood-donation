@@ -20,7 +20,7 @@ def save_plot_to_buffer(figure, filename):
     buffer = BytesIO()
     figure.savefig(buffer, format='png')
     buffer.seek(0)
-    plt.show()
+    # plt.show()
     plt.close()
     return buffer
 
