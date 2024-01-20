@@ -95,5 +95,5 @@ To schedule the script to run daily at 9 am using cron, follow these steps:
 4. Add the following line to schedule the script to run at 9 am every day:
 
     ```bash
-    0 9 * * * /path/to/python3 /path/to/your_script.py
+    0 9 * * * /path/to/python3 /path/to/script.py
     ``

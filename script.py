@@ -20,6 +20,7 @@ def save_plot_to_buffer(figure, filename):
     buffer = BytesIO()
     figure.savefig(buffer, format='png')
     buffer.seek(0)
+    plt.show()
     plt.close()
     return buffer
 
@@ -120,11 +121,13 @@ img_buffer_4 = plot_quarterly_donation_trends(df_quarterly_malaysia, 'Quarterly 
 merged_data = pd.merge(donations_state_data, newdonors_state_data, on=['date', 'state'])
 merged_data['date'] = pd.to_datetime(merged_data['date'])
 merged_data['year'] = merged_data['date'].dt.year
-yearly_data = merged_data.groupby('year').agg({'date': 'first', '17-24': 'sum', '25-29': 'sum', '30-34': 'sum',
-                                               '35-39': 'sum', '40-44': 'sum', '45-49': 'sum', '50-54': 'sum',
-                                               '55-59': 'sum', '60-64': 'sum', 'donations_regular': 'sum'})
 
-age_columns = ['17-24', '25-29', '30-34', '35-39', '40-44', '45-49', '50-54', '55-59', '60-64', 'donations_regular']
+age_columns = [col for col in merged_data.columns if col.isdigit() or ('-' in col and all(part.isdigit() for part in col.split('-')))]
+age_columns.append('donations_regular')
+
+# Group by year and sum the relevant columns
+yearly_data = merged_data.groupby('year')[['date'] + age_columns].agg({'date': 'first', **{age: 'sum' for age in age_columns}})
+
 filtered_data = yearly_data[age_columns].copy()
 filtered_data.iloc[:, :-1] = filtered_data.iloc[:, :-1].replace(0, np.nan)
 retention_rate = filtered_data.iloc[:, :-1].div(filtered_data['donations_regular'], axis=0)
