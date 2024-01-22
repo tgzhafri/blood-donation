@@ -7,6 +7,7 @@ from io import BytesIO
 from telegram import Bot, InputFile
 import asyncio
 from dotenv import load_dotenv
+import datetime as dt
 
 # Function to load and preprocess data
 def load_and_preprocess_csv(url):
@@ -43,21 +44,10 @@ def plot_blood_donation_trends(data, title, xlabel, ylabel, filename, color=None
     ax.legend()
     return save_plot_to_buffer(fig, filename)
 
-# Function to plot yearly donor retention trends in Malaysia
-def plot_yearly_donor_retention_trends(data, title, xlabel, ylabel, filename, color='red'):
-    fig, ax = plt.subplots(figsize=(15, 8))
-    ax.plot(data.index, data.values, marker='o', linestyle='-', label='Malaysia', color=color)
-    ax.set_title(title)
-    ax.set_xlabel(xlabel)
-    ax.set_ylabel(ylabel)
-    ax.legend()
-    plt.tight_layout()
-    return save_plot_to_buffer(fig, filename)
-
 # Function to plot blood donor retention rate by age group in Malaysia (yearly)
 def plot_retention_rate_heatmap(data, title, xlabel, ylabel, filename):
     plt.figure(figsize=(15, 8))
-    sns.heatmap(data.T, cmap='YlGnBu', annot=True, fmt=".2f", cbar_kws={'label': 'Retention Rate %'})
+    sns.heatmap(data, annot=True, fmt= '.0%',cmap='YlGnBu', vmin = 0.0 , vmax = 0.4, cbar_kws={'label': 'Retention Rate %'})
     plt.xlabel(xlabel)
     plt.ylabel(ylabel)
     plt.title(title)
@@ -75,60 +65,64 @@ async def send_plots_to_telegram(img_buffers, chat_id, token):
         print(f"Error: {e}")
 
 # Load and preprocess data
-donations_state_data = load_and_preprocess_csv("https://raw.githubusercontent.com/MoH-Malaysia/data-darah-public/main/donations_state.csv")
-newdonors_state_data = load_and_preprocess_csv("https://raw.githubusercontent.com/MoH-Malaysia/data-darah-public/main/newdonors_state.csv")
-granular_data = pd.read_parquet("https://dub.sh/ds-data-granular")
+donations_state_df = load_and_preprocess_csv("https://raw.githubusercontent.com/MoH-Malaysia/data-darah-public/main/donations_state.csv")
+blood_donation_df = pd.read_parquet("https://dub.sh/ds-data-granular")
 
 ## Question 1 - How are blood donations in Malaysia / states trending?
 # Resample data to monthly frequency and sum the values for each year and state
-monthly_donations = donations_state_data.groupby(['state', pd.Grouper(key='date', freq='M')])['daily'].sum().reset_index()
-img_buffer_1 = plot_blood_donation_trends(monthly_donations, 'Monthly Blood Donations Trend For States in Malaysia', 'Date', 'Monthly Donations', 'blood_donations_trend_1.png')
+monthly_donations = donations_state_df.groupby(['state', pd.Grouper(key='date', freq='M')])['daily'].sum().reset_index()
+img_buffer_1 = plot_blood_donation_trends(monthly_donations, 'Monthly Blood Donations Trend For States in Malaysia', 'Year', 'Monthly Donations', 'blood_donations_trend_1.png')
 
 # Extract data specific to Malaysia
 malaysia_monthly_data = monthly_donations[monthly_donations['state'] == 'Malaysia']
-img_buffer_2 = plot_blood_donation_trends(malaysia_monthly_data, 'Monthly Blood Donations Trend in Malaysia', 'Date', 'Monthly Donations', 'blood_donations_trend_2.png', color='red')
+img_buffer_2 = plot_blood_donation_trends(malaysia_monthly_data, 'Monthly Blood Donations Trend in Malaysia', 'Year', 'Monthly Donations', 'blood_donations_trend_2.png', color='red')
 
 ## Question 2 - How well is Malaysia retaining blood donors? (meaning, are people with a history of blood donation coming back to donate regularly)
 
-merged_donors_data = pd.merge(donations_state_data, newdonors_state_data, on=['date', 'state'])
-merged_donors_data['total_donations'] = merged_donors_data['donations_regular'] + merged_donors_data['donations_irregular']
+# A function that will parse the date Time based cohort
+def get_year(x): return dt.datetime(x.year, 1, 1)
 
-granular_data['visit_date'] = pd.to_datetime(granular_data['visit_date'])
-granular_data['date'] = pd.to_datetime(granular_data['visit_date'])
-merged_donors_data['date'] = pd.to_datetime(merged_donors_data['date'])
+def get_date_int(df, column):
+    year = df[column].dt.year
+    month = df[column].dt.month
+    day = df[column].dt.day
+    return year, month, day
 
-merged_donors_data['year'] = merged_donors_data['date'].dt.year
+blood_donation_df['visit_date'] = pd.to_datetime(blood_donation_df['visit_date'])
+blood_donation_df['VisitYear'] = blood_donation_df['visit_date'].apply(get_year)
 
-merged_donors_data = pd.merge_asof(
-    merged_donors_data.sort_values('date'),
-    granular_data.sort_values('visit_date'),
-    by='date',
-    left_on='date',
-    right_on='visit_date',
-)
+grouping = blood_donation_df.groupby('donor_id')['VisitYear']
 
-total_donations_per_year = merged_donors_data.groupby('year')['total_donations'].sum()
-unique_donors_per_year = granular_data.groupby(granular_data['visit_date'].dt.year)['donor_id'].nunique()
-retention_rate = (unique_donors_per_year / total_donations_per_year) * 100
+blood_donation_df['CohortYear'] = grouping.transform('min')
 
-### Plot yearly blood donor retention rate in Malaysia
-img_buffer_3 = plot_yearly_donor_retention_trends(retention_rate, 'Yearly Blood Donor Retention Trends in Malaysia', 'Year', 'Percentage', 'blood_donations_retention_rate.png')
+visit_year, _, _ = get_date_int(blood_donation_df, 'VisitYear')
+cohort_year, _, _ = get_date_int(blood_donation_df, 'CohortYear')
 
-### Plot blood donor retention rate by age group in Malaysia (yearly)
+years_diff = visit_year - cohort_year
 
-# Group by year and sum the relevant columns
-age_columns = [col for col in merged_donors_data.columns if col.isdigit() or ('-' in col and all(part.isdigit() for part in col.split('-')))]
-age_columns.append('total_donations')
+blood_donation_df['CohortIndex'] = years_diff
 
-# Group by year and sum the relevant columns
-yearly_data = merged_donors_data.groupby('year')[['date'] + age_columns].agg({'date': 'first', **{age: 'sum' for age in age_columns}})
-filtered_data = yearly_data[age_columns].copy()
-filtered_data.iloc[:, :-1] = filtered_data.iloc[:, :-1].replace(0, np.nan)
+grouping = blood_donation_df.groupby(['CohortYear', 'CohortIndex'])
 
-# Calculate the retention rate per year and age group
-retention_rate_age_group = (filtered_data.iloc[:, :-1] / filtered_data.iloc[:, :-1].shift(axis=1)).iloc[:, 1:].fillna(0) * 100
+# Counting number of unique customer Id's falling in each group of CohortMonth and CohortIndex
+cohort_data = grouping['donor_id'].apply(pd.Series.nunique)
+cohort_data = cohort_data.reset_index()
 
-img_buffer_4 = plot_retention_rate_heatmap(retention_rate_age_group,'Retention Rate by Age Group Over the Years', "Year", "Age Group",'blood_donors_retention_rate_age_group_heatmap.png')
+ # Assigning column names to the dataframe created above
+cohort_counts = cohort_data.pivot(index='CohortYear',
+                                 columns ='CohortIndex',
+                                 values = 'donor_id')
+
+cohort_sizes = cohort_counts.iloc[:,0]
+
+retention = cohort_counts.divide(cohort_sizes, axis=0)
+
+# Converting the retention rate into percentage and Rounding off.
+retention.round(3)*100
+
+retention.index = retention.index.strftime('%Y')
+
+img_buffer_3 = plot_retention_rate_heatmap(retention, 'Yearly Blood Donor Retention Rate %', 'Cohort Year', 'Year', 'blood_donor_retention_rate.png')
 
 # Function to send plots to Telegram group
 async def send_plots_to_telegram(img_buffers, chat_id, token):
@@ -152,7 +146,6 @@ async def main():
     await send_plots_to_telegram([(img_buffer_1, 'blood_donations_trend_1.png'), 
                                   (img_buffer_2, 'blood_donations_trend_2.png'),
                                   (img_buffer_3, 'blood_donor_retention_trend_3.png'), 
-                                  (img_buffer_4, 'blood_donor_retention_trend_4.png'),
                                   ], chat_id, token)
 
 # Run the asynchronous event loop
